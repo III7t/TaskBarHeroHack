@@ -2,5 +2,114 @@
   "authorized_ids": [
     "f0e51e9cafb2a8b6def623838ea5f84ef655d0ba034967ee13605e8816daa753"
   ],
-  "frida_script": "// ╔══════════════════════════════════════════════════════════╗\n// ║   TaskBarHero — Frida Hile Ayarları ve Kodları           ║\n// ║   Yazar: Luxi & III7t                             ║\n// ╚══════════════════════════════════════════════════════════╝\n\n// ==============================================================================\n// ⚙️ HİLE AYARLARI (İstediğiniz değerleri buradan değiştirebilirsiniz)\n// ==============================================================================\nconst GODMODE      = true;      // true: Ölümsüzlük Açık  | false: Kapalı\nconst ONE_HIT_KILL = true;      // true: Tek Atma Açık   | false: Kapalı\nconst OHK_HASAR    = 9000.0;  // Düşmana verilecek hasar miktarı (Burayı arttırabilirsiniz!)\n\n// ==============================================================================\n// 🛠️ OYUN OFSETLERİ VE KODLARI (Yeni yama gelmedikçe dokunmayın)\n// ==============================================================================\nconst OFF_IS_HERO     = 0x100;    // Unit->b_isHero (bool)\nconst OFF_ATTACKER    = 0x00;     // DamageInfo->Attacker (ptr)\nconst OFF_DAMAGE      = 0x08;     // DamageInfo->OriginDamage (float)\nconst RVA_TAKE_DAMAGE = 0xBFE930; // Unit.TakeDamage adresi (v2.5 yaması)\n\nfunction banner() {\n    console.log('\\n\\x1b[36m╔══════════════════════════════════════════════════╗\\x1b[0m');\n    console.log('\\x1b[36m║   TaskBarHero Hook Script v2.5 • Pantheon     ║\\x1b[0m');\n    console.log('\\x1b[36m║   Frida Sürümü: ' + Frida.version.padEnd(32) + ' ║\\x1b[0m');\n    console.log('\\x1b[36m╠══════════════════════════════════════════════════╣\\x1b[0m');\n    console.log('║  Godmode      : ' + (GODMODE      ? '\\x1b[32m✔ AÇIK \\x1b[0m' : '\\x1b[31m✘ KAPALI\\x1b[0m') + '                        ║');\n    console.log('║  One Hit Kill : ' + (ONE_HIT_KILL ? '\\x1b[32m✔ AÇIK \\x1b[0m' : '\\x1b[31m✘ KAPALI\\x1b[0m') + '  (' + String(OHK_HASAR).padEnd(10) + ' hasar)  ║');\n    console.log('\\x1b[36m╚══════════════════════════════════════════════════╝\\x1b[0m\\n');\n}\n\nbanner();\n\nconst mod = Process.findModuleByName('GameAssembly.dll');\nif (!mod) {\n    console.log('[-] GameAssembly.dll bulunamadı — oyun açık mı?');\n} else {\n    console.log('[+] GameAssembly.dll @ ' + mod.base);\n\n    try {\n        Interceptor.attach(mod.base.add(RVA_TAKE_DAMAGE), {\n            onEnter(args) {\n                const unit   = args[0];\n                const dmgInf = args[1];\n                if (unit.isNull() || dmgInf.isNull()) return;\n\n                try {\n                    const heroAliyor  = unit.add(OFF_IS_HERO).readU8() !== 0;\n                    const attackerPtr = dmgInf.add(OFF_ATTACKER).readPointer();\n                    const heroVuruyor = !attackerPtr.isNull() && attackerPtr.add(OFF_IS_HERO).readU8() !== 0;\n\n                    if (GODMODE && heroAliyor) {\n                        dmgInf.add(OFF_DAMAGE).writeFloat(0);\n                        console.log('[✔] Godmode — kahramana gelen hasar engellendi');\n                    }\n\n                    if (ONE_HIT_KILL && heroVuruyor && !heroAliyor) {\n                        dmgInf.add(OFF_DAMAGE).writeFloat(OHK_HASAR);\n                        console.log('[✔] One Hit Kill — düşmana ' + OHK_HASAR + ' hasar verildi');\n                    }\n                } catch (e) {\n                    console.log('[-] Hook esnasında hata: ' + e.message);\n                }\n            }\n        });\n        console.log('[+] Hook başarıyla aktif edildi! İyi oyunlar!\\n');\n    } catch (err) {\n        console.log('[-] Hook kurulamadı: ' + err.message);\n    }\n}\n"
+  // ╔══════════════════════════════════════════════════════════╗
+// ║   TaskBarHero — Frida Hook Script (Yeni Yama Güncellemesi)║
+// ║   Yazar: Antigravity & III7t    Sürüm: v2.2 (Yeni Yama)    ║
+// ╚══════════════════════════════════════════════════════════╝
+
+const GODMODE = true;
+const ONE_HIT_KILL = true;
+const ONE_HIT_DAMAGE = 9000.0; // Kullanıcının isteği üzerine 9000.0 hasara sabitlendi
+
+const gameAssembly = Process.findModuleByName("GameAssembly.dll");
+
+if (gameAssembly) {
+    console.log("[+] GameAssembly.dll Base Address: " + gameAssembly.base);
+
+    // Sınıf içi Değişken Ofsetleri
+    const OFF_IS_HERO = 0x100;     // Unit -> b_isHero (bool)
+    const OFF_ATTACKER = 0x00;     // DamageInfo -> Attacker (Unit*)
+    const OFF_DAMAGE = 0x08;       // DamageInfo -> OriginDamage (float)
+    const OFF_IS_CRITICAL = 0x0C;  // DamageInfo -> IsCritical (bool)
+
+    // IL2CPP Class Name Helper (Sınıf adını doğrudan bellekten okur)
+    function getClassName(objPtr) {
+        if (objPtr.isNull()) return "null";
+        try {
+            const klass = objPtr.readPointer();
+            if (klass.isNull()) return "null";
+            const namePtr = klass.add(0x10).readPointer();
+            if (namePtr.isNull()) return "null";
+            return namePtr.readUtf8String();
+        } catch (e) {
+            return "error";
+        }
+    }
+
+    // Birimin kahraman olup olmadığını güvenli kontrol etme
+    function isHeroUnit(unitPtr) {
+        if (unitPtr.isNull()) return false;
+        try {
+            const className = getClassName(unitPtr);
+            if (className === "Hero") return true;
+            if (className === "Monster") return false;
+        } catch (e) {}
+        try {
+            // Eğer sınıf adı okunamadıysa eski offset yöntemini yedek olarak kullan
+            return unitPtr.add(OFF_IS_HERO).readU8() !== 0;
+        } catch (e) {}
+        return false;
+    }
+
+    // Hasar veren saldırganın kahraman olup olmadığını güvenli kontrol etme
+    function isHeroAttacker(dmgInfPtr) {
+        if (dmgInfPtr.isNull()) return false;
+        try {
+            const attackerPtr = dmgInfPtr.add(OFF_ATTACKER).readPointer();
+            if (attackerPtr.isNull()) return false;
+            return isHeroUnit(attackerPtr);
+        } catch (e) {}
+        return false;
+    }
+
+    // Hasar işleme mantığı (Ortak fonksiyon)
+    function handleDamage(unit, dmgInf, hookName) {
+        if (unit.isNull() || dmgInf.isNull()) return;
+
+        try {
+            const heroAliyor = isHeroUnit(unit);
+            const heroVuruyor = isHeroAttacker(dmgInf);
+
+            // Godmode: Hasar alan kahraman ise gelen hasarı sıfırla
+            if (GODMODE && heroAliyor) {
+                dmgInf.add(OFF_DAMAGE).writeFloat(0.0);
+                console.log(`[⚡] [${hookName}] Godmode — Oyuncuya gelen hasar engellendi!`);
+            }
+
+            // One Hit Kill: Hasarı veren kahraman, alan düşman ise
+            if (ONE_HIT_KILL && heroVuruyor && !heroAliyor) {
+                dmgInf.add(OFF_DAMAGE).writeFloat(ONE_HIT_DAMAGE);
+                dmgInf.add(OFF_IS_CRITICAL).writeU8(1); // Kritik vuruşu zorla
+                console.log(`[💥] [${hookName}] Kahraman vuruşu algılandı! Düşmana ${ONE_HIT_DAMAGE} hasar verildi (Kritik).`);
+            }
+        } catch (e) {
+            console.log(`[-] [${hookName}] Hata: ` + e.message);
+        }
+    }
+
+    // Yeni güncelleme (patch) ile değişen tüm olası hasar/can düşme yolları (Unit.edk, Hero.gqm, Monster.gqm, Unit.gqm)
+    const targets = [
+        { name: "Unit.edk", offset: 0xBFE930 },
+        { name: "Hero.gqm", offset: 0xC00CE0 },
+        { name: "Monster.gqm", offset: 0xC05780 },
+        { name: "Unit.gqm", offset: 0xC0BE10 }
+    ];
+
+    targets.forEach(function(target) {
+        try {
+            const targetAddress = gameAssembly.base.add(target.offset);
+            Interceptor.attach(targetAddress, {
+                onEnter: function (args) {
+                    handleDamage(args[0], args[1], target.name);
+                }
+            });
+            console.log(`[+] Hook Aktif: ${target.name} (RVA: 0x${target.offset.toString(16).toUpperCase()})`);
+        } catch (err) {
+            console.log(`[-] ${target.name} kancalanırken hata: ` + err.message);
+        }
+    });
+
+} else {
+    console.log("[-] GameAssembly.dll bulunamadı.");
+} }\n}\n"
 }
